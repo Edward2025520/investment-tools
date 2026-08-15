@@ -9,8 +9,8 @@ DEFAULT_OUTPUT = PROJECT_ROOT / "data" / "reports"
 
 # A 股：6 位数字
 _RE_A = re.compile(r"^(sz|sh|SH|SZ)?(\d{6})$")
-# 港股：数字后可选 .HK，或 hk 前缀
-_RE_HK = re.compile(r"^(?:hk[\s:]?)?(\d{1,5})(?:\.HK)?$", re.IGNORECASE)
+# 港股：要求 .HK 后缀或 hk 前缀，避免纯数字误分类
+_RE_HK = re.compile(r"^(?:hk[\s:]?)?(\d{1,5})\.HK$", re.IGNORECASE)
 
 
 def normalize_code(stock_code: str) -> tuple[str, str]:
@@ -20,12 +20,12 @@ def normalize_code(stock_code: str) -> tuple[str, str]:
     ('600519', 'a')
     >>> normalize_code("03690.HK")
     ('03690.HK', 'hk')
-    >>> normalize_code("00700")
-    ('00700.HK', 'hk')
     >>> normalize_code("NVDA")
     ('NVDA', 'us')
     """
     code = stock_code.strip()
+    if not code:
+        raise ValueError("股票代码不能为空")
 
     m = _RE_HK.match(code)
     if m:

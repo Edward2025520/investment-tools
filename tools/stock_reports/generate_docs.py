@@ -112,23 +112,11 @@ def build_doc() -> Path:
     doc.add_heading("2  环境要求", level=1)
     doc.add_paragraph("本工具依赖以下 Python 环境：")
 
-    _add_table_row(
-        doc.add_table(1, 3),
-        ["项目", "要求", "说明"],
-        is_header=True,
-    )
-    _add_table_row(
-        doc.add_table(1, 3),
-        ["Python", "3.9+", "推荐通过 Anaconda 管理"],
-    )
-    _add_table_row(
-        doc.add_table(1, 3),
-        ["httpx", "≥0.28", "异步 HTTP 客户端"],
-    )
-    _add_table_row(
-        doc.add_table(1, 3),
-        ["tqdm", "≥4.67", "进度条显示"],
-    )
+    table = doc.add_table(rows=0, cols=3)
+    _add_table_row(table, ["项目", "要求", "说明"], is_header=True)
+    _add_table_row(table, ["Python", "3.9+", "推荐通过 Anaconda 管理"])
+    _add_table_row(table, ["httpx", "≥0.28", "异步 HTTP 客户端"])
+    _add_table_row(table, ["tqdm", "≥4.67", "进度条显示"])
     doc.add_paragraph()
 
     # ── 3. 安装 ──

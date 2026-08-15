@@ -77,14 +77,19 @@ def main() -> None:
     code = args.stock_code
 
     client = hkex_client if args.market == "hk" else cninfo_client
-    result = asyncio.run(
-        client.download_annual_reports(
-            stock_code=code,
-            years=args.years,
-            base_dir=args.output,
-            force=args.force,
+    try:
+        result = asyncio.run(
+            client.download_annual_reports(
+                stock_code=code,
+                years=args.years,
+                base_dir=args.output,
+                force=args.force,
+            )
         )
-    )
+    except Exception as e:
+        print(f"\n[错误] 下载失败: {e}")
+        print("  请检查网络连接后重试。")
+        sys.exit(1)
     print_summary(code, result)
 
 

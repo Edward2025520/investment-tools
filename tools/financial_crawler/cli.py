@@ -56,9 +56,16 @@ def process_stock(code: str, years: int, base_dir: Path) -> bool:
     print(f"{'='*50}")
 
     output_dir = utils.resolve_output_path(code, base_dir)
+    charts_dir = output_dir / "charts"
+    charts_dir.mkdir(parents=True, exist_ok=True)
     print(f"  输出目录: {output_dir}")
+    print(f"  图表目录: {charts_dir}")
 
-    data = akshare_client.fetch_all(code, years=years)
+    try:
+        data = akshare_client.fetch_all(code, years=years)
+    except Exception as e:
+        print(f"  [失败] 网络错误或数据源不可用: {e}")
+        return False
 
     # 检查是否有足够数据
     valid_tables = {k: v for k, v in data.items() if not v.empty}
@@ -72,16 +79,19 @@ def process_stock(code: str, years: int, base_dir: Path) -> bool:
     if min_years < 5:
         print(f"  [警告] 数据不足 5 年，图表可能参考价值有限")
 
-    generated = chart.plot_all(data, output_dir)
+    generated = chart.plot_all(data, charts_dir, market=market)
 
     # 导出 CSV
     csv_count = 0
-    raw_data = akshare_client.fetch_raw_all(code, years=years)
-    for name, df in raw_data.items():
-        if df is not None and not df.empty:
-            csv_path = output_dir / f"{name}.csv"
-            df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-            csv_count += 1
+    try:
+        raw_data = akshare_client.fetch_raw_all(code, years=years)
+        for name, df in raw_data.items():
+            if df is not None and not df.empty:
+                csv_path = charts_dir / f"{name}.csv"
+                df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+                csv_count += 1
+    except Exception as e:
+        print(f"  [警告] CSV 导出失败: {e}")
 
     print(f"  完成: 生成 {len(generated)} 张图表 + {csv_count} 个 CSV")
     return True

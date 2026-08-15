@@ -13,7 +13,7 @@ from tools.financial_crawler import utils
 def _parse_number(x) -> Optional[float]:
     """将 '853.10亿' / '17.92%' / 'False' 转为浮点数（亿元）。"""
     if isinstance(x, (int, float)):
-        return round(float(x) / 1e8, 2) if abs(float(x)) > 1e8 else round(float(x), 2)
+        return round(float(x) / 1e8, 2)
     if not isinstance(x, str):
         return None
     x = x.strip()

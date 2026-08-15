@@ -2,18 +2,19 @@
 
 核心机制：
   1. JSF 会话初始化（获 ViewState + POST 日期范围）
-  2. 按月份分批查询所有股票的全量披露记录（stockId=-1）
+  2. 按月份分批查询（仅 1-6 月年报发布高峰），自动分页
   3. 客户端按股票代码 + 年报标题过滤
   4. 按年份去重、偏好中文、下载 PDF
 """
 
-import calendar
 import json
+import calendar
 import re
 import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 from datetime import datetime, timedelta
+from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
@@ -24,6 +25,7 @@ from tools.stock_reports import utils
 # ── 常量 ──
 HKEX_SEARCH_PAGE = "https://www1.hkexnews.hk/search/titlesearch.xhtml"
 HKEX_JSON_API = "https://www1.hkexnews.hk/search/titleSearchServlet.do"
+HKEX_PREFIX_API = "https://www1.hkexnews.hk/search/prefix.do"
 HKEX_BASE = "https://www1.hkexnews.hk"
 
 _HEADERS = {
@@ -97,30 +99,56 @@ async def _init_session(client: httpx.AsyncClient) -> None:
     )
 
 
+async def _get_stock_id(client: httpx.AsyncClient, code: str) -> str:
+    """通过 prefix.do 接口查询目标股票的内部 stockId（服务端过滤用）。
+
+    返回 "-1"（全部股票）表示未找到，调用方据此回退到全市场查询。
+    """
+    try:
+        resp = await client.get(
+            HKEX_PREFIX_API,
+            params={"lang": "EN", "type": "A", "name": code, "market": "SEHK", "callback": "callback"},
+            headers=_HEADERS,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        body = resp.text
+        # 兼容 JSONP 包装 callback({...}) 与纯 JSON 两种响应
+        start, end = body.find("({"), body.rfind("})")
+        if start != -1 and end != -1:
+            data = json.loads(body[start + 1 : end + 1])
+        else:
+            data = json.loads(body)
+        for item in data.get("stockInfo", []):
+            if item.get("code") == code:
+                return str(item["stockId"])
+    except Exception:
+        pass
+    return "-1"
+
+
 async def _fetch_month(
     client: httpx.AsyncClient,
     year: int,
     month: int,
     lang: str = "E",
+    stock_id: str = "-1",
 ) -> List[Dict[str, Any]]:
-    """获取指定月份所有披露记录（自动分页）。
+    """获取指定月份披露记录（自动分页）。
 
-    lang="E" 返回英文标题记录，lang="H" 返回繁体中文标题记录。
-    中文版 PDF 通常在 FILE_LINK 文件名末尾有 _c 后缀。
+    stock_id 指定单只股票（服务端过滤），默认 "-1" 表示全部股票。
+    lang="E" 英文标题，lang="H" 繁体中文标题。
     """
     _, last_day = calendar.monthrange(year, month)
-    date_from = f"{year}{month:02d}01"
-    date_to = f"{year}{month:02d}{last_day:02d}"
-
     base_params = {
         "sortDir": "0",
         "sortByOptions": "DateTime",
         "category": "0",
         "market": "SEHK",
-        "stockId": "-1",
+        "stockId": stock_id,
         "documentType": "-1",
-        "fromDate": date_from,
-        "toDate": date_to,
+        "fromDate": f"{year}{month:02d}01",
+        "toDate": f"{year}{month:02d}{last_day:02d}",
         "title": "",
         "searchType": "0",
         "t1code": "-2",
@@ -145,14 +173,12 @@ async def _fetch_month(
         raw = body.get("result", "null")
         if raw and raw != "null":
             chunk = json.loads(raw) if isinstance(raw, str) else (raw if isinstance(raw, list) else [])
-            # Only append NEW records (beyond what we already have)
             new_records = chunk[len(all_records):]
             all_records.extend(new_records)
 
         if not body.get("hasNextRow", False):
             break
         page_size += 10000
-        # Safety cap
         if page_size > 50000:
             break
 
@@ -208,32 +234,36 @@ async def fetch_annual_list(
     stock_code: str,
     max_years: int = 10,
 ) -> List[Dict[str, Any]]:
-    """按年份、聚焦年报披露高峰月份查询，过滤目标股票的年报，去重后返回前 N 年。"""
+    """按月份分批查询，聚焦 1-6 月年报发布高峰，过滤目标股票后去重返回前 N 年。
+
+    港交所披露易 API 仅支持约 30 天的时间跨度，须按月查询。
+    先通过 prefix.do 获取目标股票 stockId 做服务端过滤（只返回该股记录），
+    找不到时回退到全市场查询。年报集中在次年 1-6 月发布，因此只查这 6 个月。
+    """
     await _init_session(client)
+
+    stock_id = await _get_stock_id(client, stock_code)
+    if stock_id == "-1":
+        print(f"  [提示] 未找到 {stock_code} 的 stockId，回退到全市场查询（较慢）")
 
     now = datetime.now()
     all_annual: List[Dict] = []
 
-    # 年报通常在次年 1-6 月发布，从当年往前推 max_years+2 年
-    for y in range(now.year, now.year - max_years - 2, -1):
-        # 聚焦 1-6 月（年报发布高峰），辅以 7-12 月（少数延迟）
-        for month in range(1, 13):
-            try:
-                en_records = await _fetch_month(client, y, month, lang="E")
-                cn_records = await _fetch_month(client, y, month, lang="H")
-            except Exception:
-                en_records, cn_records = [], []
+    for y in range(now.year + 1, now.year - max_years - 2, -1):
+        for month in range(1, 7):  # 仅 1-6 月（年报发布高峰）
+            for lang in ("E", "H"):
+                try:
+                    records = await _fetch_month(client, y, month, lang=lang, stock_id=stock_id)
+                except Exception:
+                    records = []
+                for r in records:
+                    if _match_stock(r, stock_code) and _is_annual_report(r):
+                        all_annual.append(r)
+            await asyncio.sleep(0.1)
 
-            for r in en_records + cn_records:
-                if _match_stock(r, stock_code) and _is_annual_report(r):
-                    all_annual.append(r)
-
-            await asyncio.sleep(0.3)
-
-            # 提前退出：当前年的所有年份都已覆盖
-            deduped = _prefer_chinese(all_annual)
-            if len(deduped) >= max_years:
-                return deduped[:max_years]
+        deduped = _prefer_chinese(all_annual)
+        if len(deduped) >= max_years:
+            return deduped[:max_years]
 
     return _prefer_chinese(all_annual)[:max_years]
 
@@ -242,8 +272,7 @@ def _build_download_url(file_link: str) -> str:
     """将 FILE_LINK 转为完整下载 URL。"""
     if file_link.startswith("http"):
         return file_link
-    prefix = "/" if not file_link.startswith("/") else ""
-    return f"{HKEX_BASE}{prefix}{file_link}"
+    return urljoin(f"{HKEX_BASE}/", file_link.lstrip("/"))
 
 
 async def download_pdf(

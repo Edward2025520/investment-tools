@@ -1,0 +1,15 @@
+# stock_reports
+httpx>=0.28
+tqdm>=4.67
+
+# financial_crawler / f_screener
+akshare>=1.14
+matplotlib>=3.8
+pandas>=2.0
+
+# stock_reports - generate_docs.py
+python-docx>=1.1
+
+# hkex_client
+beautifulsoup4>=4.12
+lxml>=5.0

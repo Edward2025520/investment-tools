@@ -1,5 +1,6 @@
 """巨潮资讯网 API 封装——异步查询年报列表并下载 PDF。"""
 
+import html
 import re
 import asyncio
 from typing import Any, Dict, List, Optional, Tuple
@@ -75,10 +76,10 @@ def _extract_name(item: dict) -> str:
     """提取公司简称，优先从 secName 取，否则从标题中提取。"""
     name = item.get("secName", "")
     if name:
-        return _EM_TAG.sub("", name).strip()
+        return html.unescape(_EM_TAG.sub("", name).strip())
     m = _RE_SHORT.search(item.get("announcementTitle", ""))
     if m:
-        return m.group(1).strip()
+        return html.unescape(m.group(1).strip())
     return ""
 
 

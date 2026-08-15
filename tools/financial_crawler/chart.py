@@ -5,13 +5,34 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import matplotlib.ticker as mticker
 import pandas as pd
 
 from tools.financial_crawler import config
 
-plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
-plt.rcParams["axes.unicode_minus"] = False
+
+def _setup_font():
+    """自动查找中文字体，避免硬编码平台特定字体名。"""
+    _CN_FONTS = [
+        "Microsoft YaHei", "SimHei", "DengXian", "Source Han Sans SC",
+        "Noto Sans CJK SC", "PingFang SC", "STHeiti", "DejaVu Sans",
+    ]
+    available = {f.name for f in fm.fontManager.ttflist}
+    for name in _CN_FONTS:
+        if name in available:
+            plt.rcParams["font.sans-serif"] = [name]
+            plt.rcParams["axes.unicode_minus"] = False
+            return
+    # fallback: 任意含 CJK 字符的字体
+    for f in fm.fontManager.ttflist:
+        if any("一" <= c <= "鿿" for c in f.name):
+            plt.rcParams["font.sans-serif"] = [f.name]
+            plt.rcParams["axes.unicode_minus"] = False
+            return
+    print("[警告] 未找到中文字体，图表中文可能显示为方框")
+
+_setup_font()
 
 
 def _save(fig: plt.Figure, path: Path) -> None:
@@ -214,18 +235,77 @@ def plot_indicators(df: pd.DataFrame, output_path: Path) -> bool:
     return True
 
 
-PLOT_FUNCS = {
-    "profit": ("profit.png", plot_profit),
-    "balance": ("balance.png", plot_balance),
-    "cashflow": ("cashflow.png", plot_cashflow),
-    "indicators": ("indicators.png", plot_indicators),
+def plot_hk_overview(balance: pd.DataFrame, cashflow: pd.DataFrame, output_path: Path) -> bool:
+    """港股概览：资产负债率 + 流动比率 + 每股经营现金流 折线图。"""
+    if balance.empty and cashflow.empty:
+        return False
+
+    fig, ax1 = plt.subplots(figsize=config.FIG_SIZE)
+
+    # 左侧 Y：资产负债率、流动比率
+    has_balance = False
+    if not balance.empty:
+        for col in balance.columns:
+            vals = balance[col].astype(float)
+            ax1.plot(balance.index.astype(str), vals.values, marker="s",
+                     linewidth=2, label=col, markersize=6)
+            for xi, v in enumerate(vals.values):
+                if pd.notna(v):
+                    ax1.annotate(f"{v:.1f}", (xi, v), textcoords="offset points",
+                                xytext=(0, 10), ha="center", fontsize=7)
+        has_balance = True
+
+    ax1.set_ylabel("比率", fontsize=11)
+    ax1.grid(axis="y", alpha=0.3)
+
+    # 右侧 Y：每股经营现金流
+    if not cashflow.empty and "每股经营现金流(元)" in cashflow.columns:
+        ax2 = ax1.twinx()
+        vals = cashflow["每股经营现金流(元)"].astype(float)
+        ax2.plot(cashflow.index.astype(str), vals.values, marker="D",
+                 linewidth=2, linestyle="--", color="#E74C3C",
+                 label="每股经营现金流(元)", markersize=6)
+        for xi, v in enumerate(vals.values):
+            if pd.notna(v):
+                ax2.annotate(f"{v:.1f}", (xi, v), textcoords="offset points",
+                            xytext=(0, -12), ha="center", fontsize=7, color="#E74C3C")
+        ax2.set_ylabel("元", fontsize=11)
+        ax2.legend(loc="upper left", frameon=True, fancybox=True, fontsize=9)
+
+    ax1.set_title("港股概览", fontsize=14, fontweight="bold", pad=15)
+    ax1.set_xlabel("报告期", fontsize=11)
+    if has_balance:
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        ax1.legend(lines1, labels1, loc="upper right", frameon=True, fancybox=True, fontsize=9)
+    fig.tight_layout()
+    _save(fig, output_path)
+    return True
+
+
+# 按市场区分的图表配置
+_MARKET_PLOTS = {
+    "a": {
+        "profit": ("profit.png", plot_profit),
+        "balance": ("balance.png", plot_balance),
+        "cashflow": ("cashflow.png", plot_cashflow),
+        "indicators": ("indicators.png", plot_indicators),
+    },
+    "hk": {
+        "profit": ("profit.png", plot_profit),
+        "indicators": ("indicators.png", plot_indicators),
+    },
+    "us": {
+        "profit": ("profit.png", plot_profit),
+        "indicators": ("indicators.png", plot_indicators),
+    },
 }
 
 
-def plot_all(data: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
-    """生成所有图表，返回已生成的文件路径列表。"""
+def plot_all(data: dict[str, pd.DataFrame], output_dir: Path, market: str = "a") -> list[str]:
+    """生成图表（按市场区分），返回已生成的文件路径列表。"""
+    plots = _MARKET_PLOTS.get(market, _MARKET_PLOTS["a"])
     generated = []
-    for name, (fname, func) in PLOT_FUNCS.items():
+    for name, (fname, func) in plots.items():
         df = data.get(name)
         if df is None or df.empty:
             print(f"  [跳过] {name}：无数据")
@@ -234,4 +314,14 @@ def plot_all(data: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
         if func(df, path):
             generated.append(str(path))
             print(f"  [生成] {path.name}")
+
+    # 港股额外生成概览图
+    if market == "hk":
+        balance = data.get("balance", pd.DataFrame())
+        cashflow = data.get("cashflow", pd.DataFrame())
+        overview_path = output_dir / "hk_overview.png"
+        if plot_hk_overview(balance, cashflow, overview_path):
+            generated.append(str(overview_path))
+            print(f"  [生成] {overview_path.name}")
+
     return generated
