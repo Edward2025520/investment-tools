@@ -56,7 +56,7 @@ def process_stock(code: str, years: int, base_dir: Path) -> bool:
     print(f"{'='*50}")
 
     output_dir = utils.resolve_output_path(code, base_dir)
-    charts_dir = output_dir / "charts"
+    charts_dir = output_dir / "charts" / "financial"
     charts_dir.mkdir(parents=True, exist_ok=True)
     print(f"  输出目录: {output_dir}")
     print(f"  图表目录: {charts_dir}")
