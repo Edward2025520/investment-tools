@@ -1,5 +1,6 @@
 """数据获取：申万行业映射缓存构建、行业成分股财务指标。"""
 
+import datetime
 import json
 import re
 import time
@@ -143,6 +144,7 @@ def _build_map_legulegu(refresh: bool, concurrency: int) -> dict:
     legulegu 间歇性故障/限流，构建时降并发、退避重试，并支持断点续建：
     已成功收录的行业在重跑 --refresh-cache 时跳过，避免整轮重抓。
     """
+    cache = Path(config.CACHE_PATH)
     second, third = _load_hierarchy()
     # 二级行业名 → 一级行业名；三级行业代码 → (三级名, 二级名)
     second_parent = dict(zip(second["行业名称"], second["上级行业"]))
@@ -232,8 +234,32 @@ def get_industry_members(mapping: dict, target: dict, level: int) -> list[str]:
     return [c for c, info in mapping.items() if info.get(col) == val]
 
 
+def mapping_granularity(mapping: dict) -> int:
+    """行业映射可达的最细申万层级：3/2/1。
+
+    降级源（申万一级指数）每只 sw1==sw2==sw3；legulegu 完整源必有 sw2!=sw1。
+    纯数据派生即可判定，毫秒级，不改 build_industry_map 的返回结构。
+    """
+    for info in mapping.values():
+        if info.get("sw3") and info["sw3"] != info.get("sw1"):
+            return 3
+        if info.get("sw2") and info["sw2"] != info.get("sw1"):
+            return 2
+    return 1
+
+
 def fetch_stock_metrics(code: str, years: int) -> Optional[dict]:
-    """取单只股票近 N 年年报各指标均值，失败返回 None。"""
+    """取单只股票近 N 年年报各指标均值（无缓存直抓），失败返回 None。"""
+    rows = fetch_raw_annual(code)
+    return None if rows is None else _aggregate_annual(rows, years)
+
+
+def fetch_raw_annual(code: str, max_years: int = config.RAW_ANNUAL_MAX_YEARS) -> Optional[list]:
+    """抓单股原始年报序列（新→旧，至多 max_years 期），失败/无年报返回 None。
+
+    缓存存原始序列而非聚合均值，roe 与 debt_ratio 逐年配对保存，任意 --years
+    都能复用同一份数据，且保住 ROA 的逐年配对口径。
+    """
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -243,50 +269,118 @@ def fetch_stock_metrics(code: str, years: int) -> Optional[dict]:
     if df is None or df.empty or "报告期" not in df.columns:
         return None
 
-    annual = df[["报告期"]].copy()
-    annual["报告期"] = pd.to_datetime(annual["报告期"], errors="coerce")
-    annual = annual[annual["报告期"].dt.month == 12].dropna(subset=["报告期"])
-    annual = annual.sort_values("报告期", ascending=False).head(years)
+    df["报告期"] = pd.to_datetime(df["报告期"], errors="coerce")
+    annual = df[df["报告期"].dt.month == 12].dropna(subset=["报告期"])
+    annual = annual.sort_values("报告期", ascending=False).head(max_years)
     if annual.empty:
         return None
 
-    def col_means(name: str):
-        if name not in df.columns:
-            return None
-        vals = df.loc[annual.index, name].map(_to_pct).dropna()
-        return round(float(vals.mean()), 2) if len(vals) else None
+    rows = []
+    for _, row in annual.iterrows():
+        def cell(name: str):
+            return None if name not in row.index else _to_pct(row[name])
+        rows.append({
+            "date": row["报告期"].strftime("%Y-%m-%d"),
+            "net_margin": cell("销售净利率"),
+            "gross_margin": cell("销售毛利率"),
+            "roe": cell("净资产收益率"),
+            "debt_ratio": cell("资产负债率"),
+        })
+    return rows
 
-    def col_series(name: str):
-        if name not in df.columns:
-            return None
-        return df.loc[annual.index, name].map(_to_pct)
 
-    net_margin = col_means("销售净利率")
-    gross_margin = col_means("销售毛利率")
-    roe = col_means("净资产收益率")
+def _aggregate_annual(rows: list, years: int) -> Optional[dict]:
+    """原始年报序列 → 近 years 期均值 {net_margin, gross_margin, roe, roa}。"""
+    if not rows:
+        return None
+    recent = rows[:years]
 
-    # ROA ≈ ROE × (1 − 资产负债率/100)
-    roe_ser, debt_ser = col_series("净资产收益率"), col_series("资产负债率")
-    roa = None
-    if roe_ser is not None and debt_ser is not None:
-        years_roa = [r * (1 - d / 100) for r, d in zip(roe_ser, debt_ser)
-                     if r is not None and d is not None]
-        if years_roa:
-            roa = round(sum(years_roa) / len(years_roa), 2)
+    def mean(key: str):
+        vals = [r[key] for r in recent if r[key] is not None]
+        return round(sum(vals) / len(vals), 2) if vals else None
 
+    roa_vals = [r["roe"] * (1 - r["debt_ratio"] / 100)
+                for r in recent if r["roe"] is not None and r["debt_ratio"] is not None]
     return {
-        "net_margin": net_margin,
-        "gross_margin": gross_margin,
-        "roe": roe,
-        "roa": roa,
+        "net_margin": mean("net_margin"),
+        "gross_margin": mean("gross_margin"),
+        "roe": mean("roe"),
+        "roa": round(sum(roa_vals) / len(roa_vals), 2) if roa_vals else None,
     }
 
 
-def fetch_metrics_batch(codes: list[str], years: int, concurrency: int = 8) -> dict[str, dict]:
-    """并发获取一批成分股指标，返回 {代码: 指标}。"""
+def _metrics_cache_path(code: str) -> Path:
+    return config.METRICS_CACHE_DIR / f"{code}.json"
+
+
+def _load_metric_cache(code: str) -> Optional[dict]:
+    path = _metrics_cache_path(code)
+    try:
+        rec = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def _save_metric_cache(code: str, rows: list) -> None:
+    path = _metrics_cache_path(code)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "fetched_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "source": "ths_annual",
+        "rows": rows,
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _cache_is_fresh(rec: dict, max_age_days: int) -> bool:
+    fetched = rec.get("fetched_at")
+    if not isinstance(fetched, str):
+        return False
+    try:
+        born = datetime.datetime.fromisoformat(fetched)
+    except ValueError:
+        return False
+    return (datetime.datetime.now() - born).days < max_age_days
+
+
+def resolve_stock_metrics(code: str, years: int, force_fresh: bool = False,
+                          max_age_days: int = config.METRICS_CACHE_MAX_AGE_DAYS) -> Optional[dict]:
+    """按新鲜度取单股聚合指标。
+
+    force_fresh（主角）：跳过缓存实时抓、抓完写缓存；抓失败返回 None，不回落旧缓存。
+    同行：缓存新鲜直接复用；无/超龄实时抓并写缓存；抓失败但有超龄旧缓存则兜底，
+    避免行业样本无故缩水。
+    """
+    rec = _load_metric_cache(code)
+    rows = rec.get("rows") if rec else None
+
+    if force_fresh:
+        fresh = fetch_raw_annual(code)
+        if fresh is None:
+            return None
+        _save_metric_cache(code, fresh)
+        return _aggregate_annual(fresh, years)
+
+    if rec is not None and _cache_is_fresh(rec, max_age_days):
+        return _aggregate_annual(rows or [], years)
+
+    fresh = fetch_raw_annual(code)
+    if fresh is not None:
+        _save_metric_cache(code, fresh)
+        return _aggregate_annual(fresh, years)
+    # 实时抓取失败：有（超龄）旧缓存就兜底，避免同行样本缩水
+    return _aggregate_annual(rows or [], years) if rows else None
+
+
+def fetch_metrics_batch(codes: list[str], years: int, concurrency: int = 8,
+                        refresh: bool = False) -> dict[str, dict]:
+    """并发取一批成分股聚合指标，返回 {代码: 指标}。refresh=True 全量实时重抓。"""
     result = {}
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {pool.submit(fetch_stock_metrics, c, years): c for c in codes}
+        futures = {pool.submit(resolve_stock_metrics, c, years, refresh): c for c in codes}
         for fut in as_completed(futures):
             c = futures[fut]
             try:

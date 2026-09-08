@@ -43,6 +43,8 @@ def parse_args() -> argparse.Namespace:
         help="输出根目录（默认 data/reports）",
     )
     parser.add_argument("--refresh-cache", action="store_true", help="强制重建行业映射缓存")
+    parser.add_argument("--refresh-metrics", action="store_true",
+                        help="同行财务指标强制实时重抓（默认走 90 天缓存）")
     parser.add_argument("--verbose", action="store_true", help="显示每只成分股指标")
     return parser.parse_args()
 
@@ -58,7 +60,7 @@ def _fmt(v):
 
 
 def process(code: str, years: int, level: int, base_dir: Path, mapping: dict,
-            verbose: bool = False) -> bool:
+            verbose: bool = False, refresh_metrics: bool = False) -> bool:
     code = code.strip()
     if not _RE_A.match(code):
         print(f"\n[错误] {code}: 仅支持 A 股 6 位代码")
@@ -68,18 +70,33 @@ def process(code: str, years: int, level: int, base_dir: Path, mapping: dict,
         print(f"\n[错误] {code}: 未在行业映射中找到该股票，请用 --refresh-cache 重建缓存")
         return False
 
-    members = data.get_industry_members(mapping, info, level)
-    level_label = config.LEVEL_COL[level]
+    # 数据源只到申万一级时（降级源 sw1==sw2==sw3），请求更细粒度自动降为 1 级并全程标注
+    granularity = data.mapping_granularity(mapping)
+    actual_level = level if granularity >= level else 1
+    level_label = config.LEVEL_COL[actual_level]
+    degrade_note = ""
+    if actual_level < level:
+        degrade_note = f"数据源仅支持申万一级，已将申万{level}级自动降为 1 级"
+
+    members = data.get_industry_members(mapping, info, actual_level)
     print(f"\n{'='*60}")
     print(f"  {code} {info['name']}  |  {info['sw1']} → {info['sw2']} → {info['sw3']}")
-    print(f"  对比行业（申万{level}级）: {info[level_label]}，成分股 {len(members)} 家")
+    print(f"  对比行业（申万{actual_level}级）: {info[level_label]}，成分股 {len(members)} 家")
+    if degrade_note:
+        print(f"  注：{degrade_note}，以下对比以申万一级为准")
     print(f"{'='*60}")
 
-    metrics = data.fetch_metrics_batch(members, years)
+    # 主角每次实时抓最新且写缓存；同行走 90 天缓存（--refresh-metrics 强制全量重抓）
+    peer_codes = [c for c in members if c != code]
+    metrics = data.fetch_metrics_batch(peer_codes, years, refresh=refresh_metrics)
+    target = data.resolve_stock_metrics(code, years, force_fresh=True)
+    if target:
+        metrics[code] = target
     if code not in metrics:
         print(f"  [失败] 目标公司财务数据获取失败")
         return False
-    print(f"  财务数据获取成功: {len(metrics)}/{len(members)} 家")
+    print(f"  财务数据获取成功: {len(metrics)}/{len(members)} 家"
+          + ("（同行已实时重抓）" if refresh_metrics else ""))
 
     stats = analysis.compute_stats(metrics, code, mapping)
 
@@ -106,20 +123,27 @@ def process(code: str, years: int, level: int, base_dir: Path, mapping: dict,
 
     csv_path = out_dir / "industry_compare.csv"
     header = ["指标", "公司值", "简单平均", "市值加权", "行业排位"]
+    if degrade_note:
+        header.append("口径备注")
     rows = [header]
-    for m in config.METRICS:
+    for i, m in enumerate(config.METRICS):
         s = stats[m["key"]]
-        rows.append([
+        row = [
             m["label"],
             "" if s["target"] is None else f"{s['target']:.2f}",
             "" if s["simple"] is None else f"{s['simple']:.2f}",
             "" if s["weighted"] is None else f"{s['weighted']:.2f}",
             "" if s["rank"] is None else f"第{s['rank']}/{s['n']}名",
-        ])
+        ]
+        if degrade_note:
+            row.append(degrade_note if i == 0 else "")
+        rows.append(row)
     csv_path.write_text("\n".join(",".join(r) for r in rows) + "\n", encoding="utf-8-sig")
 
     png_path = out_dir / "industry_compare.png"
     title = f"{info['name']}（{code}） vs {info[level_label]}行业，{len(members)} 家样本"
+    if degrade_note:
+        title += f"\n（注：{degrade_note}）"
     chart.plot_compare(stats, png_path, title=title)
 
     print(f"\n  已输出:")
@@ -148,7 +172,8 @@ def main() -> None:
 
     success = 0
     for code in codes:
-        if process(code, args.years, args.level, args.output, mapping, args.verbose):
+        if process(code, args.years, args.level, args.output, mapping,
+                   args.verbose, args.refresh_metrics):
             success += 1
 
     print(f"\n全部完成: {success}/{len(codes)} 成功")

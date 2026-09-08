@@ -6,6 +6,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = PROJECT_ROOT / "data" / "reports"
 CACHE_PATH = PROJECT_ROOT / "data" / "industry_map.json"
 INDEX_CACHE = PROJECT_ROOT / "data" / "industry_map_index.json"
+METRICS_CACHE_DIR = PROJECT_ROOT / "data" / "industry_profit_metrics"  # 每股一文件的原始年报序列缓存
+METRICS_CACHE_MAX_AGE_DAYS = 90
+RAW_ANNUAL_MAX_YEARS = 20  # 每股最多存 20 个年报期，覆盖任意 --years
 
 DEFAULT_YEARS = 3
 DEFAULT_LEVEL = 2

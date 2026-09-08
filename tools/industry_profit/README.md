@@ -17,6 +17,9 @@ python tools/industry_profit/cli.py 600519 --years 5 --level 3
 
 # 一次看多只股票
 python tools/industry_profit/cli.py --codes 600519,000858
+
+# 同行财务数据强制实时重抓（默认主角实时、同行走缓存，见下方"数据新鲜度"）
+python tools/industry_profit/cli.py 600519 --refresh-metrics
 ```
 
 ### 对比粒度怎么选
@@ -59,8 +62,17 @@ python tools/industry_profit/cli.py --codes 600519,000858
 
 - 缓存文件：`data/industry_map.json`（完整 1/2/3 级）
 - 抓取网站偶尔限流/抽风，工具会自动降速重试，中断了也支持断点续建（补抓缺的行业，不会重来）
-- legulegu 连不上时会**自动改用申万一级行业指数成分股**（只分到一级，如"银行"、"食品饮料"），缓存到 `data/industry_map_index.json`；`--level 2/3` 在这种模式下会退化为一级
+- legulegu 连不上时会**自动改用申万一级行业指数成分股**（只分到一级，如"银行"、"食品饮料"），缓存到 `data/industry_map_index.json`。此时你选的 `--level 2/3` 会**自动降为一级**，终端、图片标题、CSV 三处都会标注"已降级"，不会让你误以为在跟更细的行业比
 - 想强制重抓：加 `--refresh-cache`
+
+## 数据新鲜度：主角永远最新，同行有 90 天缓存
+
+行业里每只股票的近 20 年年报序列会缓存到 `data/industry_profit_metrics/`（每股一个小 JSON；删掉整个目录，下次自动重建）。
+
+- **你输入的那只主角**：每次运行都实时去拉最新财报，**不用旧缓存**（拉完也存一份，方便日后它当别的股票的同行走缓存）
+- **同行股票**：优先用 90 天内抓过的缓存，90 天后自动重抓。所以第一次跑某个行业最慢，之后重跑几乎秒出
+- 想无视缓存、把所有同行也强制实时重抓一遍：加 `--refresh-metrics`
+- 换 `--years`（看 3 年还是 5 年）不用重抓——缓存存的是逐年年报的原始序列，不是算好的平均
 
 ## 数据从哪来
 
