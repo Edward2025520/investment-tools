@@ -72,6 +72,8 @@ def _retry_info(fn, retries: int = 5):
 
 # 全市场约 5000+ 只股票，缓存明显不足时提示重建
 _MIN_CACHE_SIZE = 1000
+# 数据源失败率超过此比例即判定构建失败，不写缓存（避免把残缺数据当好数据）
+FAIL_TOLERANCE = 0.3
 _HIERARCHY_CACHE = config.PROJECT_ROOT / "data" / "sw_hierarchy.json"
 
 # 申万一级行业指数代码 → 行业名。legulegu 不可用时的降级源
@@ -115,27 +117,30 @@ def _load_hierarchy():
 def build_industry_map(refresh: bool = False, concurrency: int = 4) -> dict:
     """构建/加载 股票代码 → {简称, 申万1/2/3级, 市值} 全量映射。
 
-    优先用 legulegu 源（完整 1/2/3 级 + 真实市值）；legulegu 不可用时自动降级
-    到申万一级行业指数成分股（仅一级粒度，用指数权重代替市值做加权）。
+    数据源按精度依次降级：
+        1. legulegu —— 完整 1/2/3 级 + 真实市值
+        2. 申万三级指数成分（akshare 走申万官网）—— 1/2/3 级完整，指数权重当市值
+        3. 申万一级指数成分 —— 只有一级粒度，最粗
     """
     cache = Path(config.CACHE_PATH)
     if cache.exists() and not refresh:
         mapping = json.loads(cache.read_text(encoding="utf-8"))
         if len(mapping) >= _MIN_CACHE_SIZE:
             return mapping
-        print(f"[警告] legulegu 行业映射缓存不完整（{len(mapping)} 只），改用指数源")
-
-    index_cache = Path(config.INDEX_CACHE)
-    if index_cache.exists() and not refresh:
-        print("[提示] 使用申万一级行业指数成分股映射（legulegu 缓存缺失/不完整时自动启用）")
-        return build_industry_map_index()
+        print(f"[警告] 行业映射缓存不完整（{len(mapping)} 只），尝试重建")
 
     try:
         return _build_map_legulegu(refresh, concurrency)
     except RuntimeError as e:
-        print(f"[警告] {e}")
-        print("[提示] 改用申万一级行业指数成分股（仅支持一级对比，--level 2/3 会退化为一级）")
-        return build_industry_map_index(refresh=True, concurrency=concurrency)
+        print(f"[警告] legulegu 源不可用：{e}")
+
+    try:
+        return _build_map_sw_index()
+    except RuntimeError as e:
+        print(f"[警告] 申万三级指数源不可用：{e}")
+
+    print("[提示] 降级到申万一级行业指数成分股（仅一级粒度，--level 2/3 会退化为一级）")
+    return build_industry_map_index(refresh=True, concurrency=concurrency)
 
 
 def _build_map_legulegu(refresh: bool, concurrency: int) -> dict:
@@ -168,6 +173,12 @@ def _build_map_legulegu(refresh: bool, concurrency: int) -> dict:
     if not todo:
         print(f"  行业映射缓存已完整（{len(mapping)} 只），无需更新")
         return mapping
+
+    # 快速探测：首个行业就抓不到，说明源整体不可用，直接放弃而不是 335 次退避重试
+    try:
+        _legulegu_cons(todo[0])
+    except Exception as e:
+        raise RuntimeError(f"legulegu 首个行业即失败（{type(e).__name__}），判定源不可用")
 
     total = len(todo)
     print(f"  遍历 {total} 个申万三级行业拉取成分股…")
@@ -216,9 +227,78 @@ def _build_map_legulegu(refresh: bool, concurrency: int) -> dict:
                 print(f"    进度 {done}/{total}，已收录 {len(mapping)} 只，失败 {failed}")
 
     print(f"  行业映射构建完成，共 {len(mapping)} 只股票")
+    if failed > total * FAIL_TOLERANCE:
+        raise RuntimeError(
+            f"legulegu 失败率过高（{failed}/{total} 个行业），判定构建失败，不写入缓存")
     if failed:
         print(f"  [警告] {failed}/{total} 个行业获取失败（多为 legulegu 故障/限流），"
               f"缓存不完整，重跑 --refresh-cache 会断点续建")
+
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    tmp = cache.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(mapping, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(cache)
+    return mapping
+
+
+def _build_map_sw_index(concurrency: int = 8) -> dict:
+    """申万三级行业指数成分股映射（akshare 走申万官网，不依赖 legulegu）。
+
+    遍历全部申万三级行业指数拉成分股，1/2/3 级名称完整，用指数权重代替绝对
+    市值做行业加权。作为 legulegu 不可用时的中间档降级源，比一级指数源精确得多。
+    """
+    cache = Path(config.CACHE_PATH)
+    second, third = _load_hierarchy()
+    second_parent = dict(zip(second["行业名称"], second["上级行业"]))
+    third_levels = {
+        row["行业代码"]: (row["行业名称"], row["上级行业"])
+        for _, row in third.iterrows()
+    }
+    total = len(third_levels)
+    print(f"  遍历 {total} 个申万三级行业指数拉取成分股…")
+
+    def fetch(sw3_code: str):
+        sym = str(sw3_code).split(".")[0]
+        try:
+            df = _retry_info(lambda: ak.index_component_sw(symbol=sym), retries=3)
+        except Exception:
+            return None
+        sw3, sw2 = third_levels[sw3_code]
+        sw1 = second_parent.get(sw2, "")
+        rows = {}
+        for _, row in df.iterrows():
+            c = _strip_code(row["证券代码"])
+            if not c or c in rows:
+                continue
+            w = row.get("最新权重")
+            rows[c] = {
+                "name": str(row["证券名称"]),
+                "sw1": sw1, "sw2": sw2, "sw3": sw3,
+                "sw3_code": sw3_code,
+                "market_cap": None if pd.isna(w) else float(w),
+            }
+        return rows
+
+    failed = 0
+    done = 0
+    mapping = {}
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = {pool.submit(fetch, c): c for c in third_levels}
+        for fut in as_completed(futures):
+            rows = fut.result()
+            done += 1
+            if rows:
+                mapping.update(rows)
+            else:
+                failed += 1
+            if done % 50 == 0 or done == total:
+                print(f"    进度 {done}/{total}，已收录 {len(mapping)} 只，失败 {failed}")
+
+    print(f"  申万三级指数映射构建完成，共 {len(mapping)} 只股票")
+    if failed > total * FAIL_TOLERANCE:
+        raise RuntimeError(f"申万三级指数失败率过高（{failed}/{total} 个行业）")
+    if failed:
+        print(f"  [警告] {failed}/{total} 个行业获取失败")
 
     cache.parent.mkdir(parents=True, exist_ok=True)
     tmp = cache.with_suffix(".json.tmp")
