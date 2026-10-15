@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tools.screen_csi500 import config, screen
+from tools.screen_csi500 import config, report, report_docx, screen
 
 
 def _out_dir() -> Path:
@@ -49,6 +49,13 @@ def main() -> None:
     print(f"  过1+2层(健康+成长)   : {p2}")
     print(f"  过全部三层(候选)     : {p3}")
     print(f"\n  已输出:\n    {full}\n    {cand_path}")
+
+    print("\n[生成报告] 绘图与报告…")
+    md = report.build(out)["markdown"]
+    docx_path = out / "中证500筛选报告.docx"
+    imgs = sorted(out.glob("*.png"))
+    report_docx.convert(md, docx_path, imgs)
+    print(f"\n  报告: {md}\n  Word: {docx_path}\n  图表: {len(imgs)} 张 PNG -> {out}")
 
 
 if __name__ == "__main__":
