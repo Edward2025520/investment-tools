@@ -44,6 +44,13 @@ def main() -> None:
     p1 = int(df["_p1"].sum())
     p2 = int((df["_p1"] & df["_p2"]).sum())
     p3 = int((df["_p1"] & df["_p2"] & df["_p3"]).sum())
+    if (df["申万一级"].fillna("").astype(str).str.strip() == "").all():
+        print(
+            "\n  [警告] 行业标签全部缺失：强周期排除与同行估值分位失效，样本会整批被淘汰，"
+            "结果不可用。\n"
+            "  请先重建映射缓存：\n"
+            "    conda run -n ai python tools/industry_profit/cli.py 600519 --refresh-cache"
+        )
     print(f"\n  样本 {n} 只")
     print(f"  过第1层(排除)        : {p1}")
     print(f"  过1+2层(健康+成长)   : {p2}")
