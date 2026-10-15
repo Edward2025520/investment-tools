@@ -1,4 +1,4 @@
-"""入口：跑中证500筛选，输出明细/候选 CSV 与终端分层统计。
+"""入口：跑中证500筛选，输出明细/候选 CSV、四张图、Markdown 与 Word 报告。
 
 用法：
     python tools/screen_csi500/run.py               # 全量 500 只
