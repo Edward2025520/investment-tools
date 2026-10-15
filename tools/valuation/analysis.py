@@ -74,15 +74,6 @@ def quality_frame(frame: pd.DataFrame, years: int) -> dict:
 
 # ── intrinsic：两阶段现金流折现 ──
 
-def _latest_row(frame: pd.DataFrame, cols: list):
-    """取 cols 全部非空的最近一年 → (year, {col:val})；无 → None。"""
-    sub = frame[list(cols)].dropna()
-    if sub.empty:
-        return None
-    year = int(sub.index[-1])
-    return year, {c: float(sub.iloc[-1][c]) for c in cols}
-
-
 def pick_base_fcf(frame: pd.DataFrame):
     """默认 FCF0：最近一个 OCF−资本开支 > 0 的年。全非正 → None。"""
     fcf = (frame["OCF"] - frame["资本开支"]).dropna()
@@ -94,12 +85,20 @@ def pick_base_fcf(frame: pd.DataFrame):
 
 
 def balance_point(frame: pd.DataFrame):
-    """最近一年现金/短借/长借/归母权益 全齐 → (year, cash, short, long, equity)。"""
-    hit = _latest_row(frame, ["货币资金", "短期借款", "长期借款", "归母权益"])
-    if hit is None:
+    """最近一年 货币资金/归母权益 齐 → (year, cash, short, long, equity, absent)。
+
+    短借/长借为空按 0 计（报表不列该行项即无此类借款），科目名记入 absent 供上层
+    明示口径；货币资金/归母权益缺失说明取数不完整，返回 None 不猜。
+    """
+    have = frame[["货币资金", "归母权益"]].dropna()
+    if have.empty:
         return None
-    year, d = hit
-    return year, d["货币资金"], d["短期借款"], d["长期借款"], d["归母权益"]
+    year = int(have.index[-1])
+    r = frame.loc[year]
+    absent = [n for n in ("短期借款", "长期借款") if pd.isna(r[n])]
+    short = 0.0 if "短期借款" in absent else float(r["短期借款"])
+    long = 0.0 if "长期借款" in absent else float(r["长期借款"])
+    return year, float(r["货币资金"]), short, long, float(r["归母权益"]), absent
 
 
 def dcf_ev(fcf0: float, g: float, gt: float, w: float, y: int) -> float:
@@ -145,13 +144,15 @@ def equity_per_share(frame: pd.DataFrame, q: dict, wacc, growth, term_g, years):
         equity = None
         net_debt = None
         bvps = None
-        notes.append("缺 短借/长借/货币资金/归母权益（银行等报表口径不同），未扣净债务、无每股净资产下限；"
+        notes.append("缺 货币资金/归母权益（银行等报表口径不同），未扣净债务、无每股净资产下限；"
                      "股东价值按 EV 近似")
     else:
-        y_bal, cash, short, long, eq = bv
+        y_bal, cash, short, long, eq, absent = bv
         net_debt = round((short + long) - cash, 2)
         equity_base = eq
         bvps = round(equity_base / shares, 2) if shares else None
+        if absent:
+            notes.append("报表无 " + "、".join(absent) + " 行项，按 0 计")
 
     def value(w, g, gt):
         ev = dcf_ev(fcf0, g, gt, w, years)
