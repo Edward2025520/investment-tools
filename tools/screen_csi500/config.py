@@ -11,7 +11,8 @@ DATA_DIR = PROJECT_ROOT / "data"
 CONS_CACHE = DATA_DIR / "csi500_cons.json"               # 成分名单
 VAL_CACHE_DIR = DATA_DIR / "csi500_valuation"            # 每股 PE/PB 估值历史
 FIN_CACHE_DIR = DATA_DIR / "csi500_financial"            # 每股 THS 摘要指标
-INDUSTRY_MAP = DATA_DIR / "industry_map_index.json"      # 申万一级行业标签（降级源）
+INDUSTRY_MAP = DATA_DIR / "industry_map.json"            # 申万 1/2/3 级完整映射
+INDEX_MAP = DATA_DIR / "industry_map_index.json"         # 仅一级的降级源
 
 CONS_MAX_AGE_DAYS = 1        # 成分名单按日刷新
 VAL_MAX_AGE_DAYS = 1         # 估值分位要现价，按日刷新

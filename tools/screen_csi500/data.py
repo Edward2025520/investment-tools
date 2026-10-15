@@ -14,6 +14,7 @@ from typing import Optional
 
 import akshare as ak
 import pandas as pd
+import requests
 
 from tools.screen_csi500 import config
 
@@ -124,6 +125,31 @@ def load_constituents(refresh: bool = False) -> list[dict]:
 
 # ── 估值历史（百度，双周频）──
 
+_BAIDU_URL = "https://gushitong.baidu.com/opendata"
+_BAIDU_TIMEOUT = 12.0
+
+
+def _fetch_baidu_valuation(code: str, indicator: str, timeout: float = _BAIDU_TIMEOUT):
+    """百度股市通估值序列（带超时）。
+
+    akshare 的 stock_zh_valuation_baidu 内部 requests.get 没设 timeout，服务器
+    不响应时请求会永久挂起，并发抓取时整个任务会卡死，因此本模块自实现一份。
+    """
+    params = {
+        "openapi": "1", "dspName": "iphone", "tn": "tangram", "client": "app",
+        "query": indicator, "code": code, "word": "", "resource_id": "51171",
+        "market": "ab", "tag": indicator, "chart_select": "全部",
+        "industry_select": "", "skip_industry": "1", "finClientType": "pc",
+    }
+    r = requests.get(_BAIDU_URL, params=params, timeout=timeout)
+    r.raise_for_status()
+    body = (r.json()["Result"][0]["DisplayData"]["resultData"]
+            ["tplData"]["result"]["chartInfo"][0]["body"])
+    df = pd.DataFrame(body, columns=["date", "value"])
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    return df
+
 def _val_cache_path(code: str) -> Path:
     return config.VAL_CACHE_DIR / f"{code}.json"
 
@@ -134,10 +160,8 @@ def load_valuation(code: str, refresh: bool = False) -> Optional[dict]:
     rec = None if refresh else _cache_read(path, config.VAL_MAX_AGE_DAYS)
     if rec is not None:
         return {"pe": rec.get("pe") or [], "pb": rec.get("pb") or []}
-    pe = _retry(lambda: ak.stock_zh_valuation_baidu(symbol=code, indicator="市盈率(TTM)",
-                                                    period="全部"))
-    pb = _retry(lambda: ak.stock_zh_valuation_baidu(symbol=code, indicator="市净率",
-                                                    period="全部"))
+    pe = _retry(lambda: _fetch_baidu_valuation(code, "市盈率(TTM)"))
+    pb = _retry(lambda: _fetch_baidu_valuation(code, "市净率"))
     if pe is None and pb is None:
         return None
 
@@ -237,7 +261,7 @@ def fetch_financials(codes: list[str], refresh: bool = False, concurrency: int =
     return out
 
 
-def fetch_valuations(codes: list[str], refresh: bool = False, concurrency: int = 6) -> dict:
+def fetch_valuations(codes: list[str], refresh: bool = False, concurrency: int = 4) -> dict:
     out = {}
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         futs = {pool.submit(load_valuation, c, refresh): c for c in codes}
@@ -252,11 +276,19 @@ def fetch_valuations(codes: list[str], refresh: bool = False, concurrency: int =
     return out
 
 
+_MIN_INDUSTRY_MAP = 1000  # 少于这个数视为不完整，退回降级源
+
+
 def load_industry_map() -> dict:
-    try:
-        return json.loads(config.INDUSTRY_MAP.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    """行业标签：优先完整 1/2/3 级映射，缺失或不完整时退回仅一级的降级源。"""
+    for path in (config.INDUSTRY_MAP, config.INDEX_MAP):
+        try:
+            m = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if len(m) >= _MIN_INDUSTRY_MAP:
+            return m
+    return {}
 
 
 def fetch_quotes(codes: list[str]) -> dict:

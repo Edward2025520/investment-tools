@@ -9,6 +9,10 @@ import pandas as pd
 
 from tools.screen_csi500 import config, data
 
+# 同行对比的行业粒度：优先申万二级（可比性更好），样本不足 5 家时回退申万一级
+PEER_LEVEL = "申万二级"
+PEER_LEVEL_FALLBACK = "申万一级"
+
 
 def _cagr(first, last, years) -> float:
     """(last/first)^(1/years)-1，单位 %。首值为负/零或跨度非法 → None。"""
@@ -31,7 +35,9 @@ def _build_rows(cons: list[dict], fin: dict, val: dict, imap: dict) -> list[dict
         v = val.get(code) or {"pe": [], "pb": []}
 
         r = {
-            "代码": code, "名称": name, "申万一级": info.get("sw1") or "",
+            "代码": code, "名称": name,
+            "申万一级": info.get("sw1") or "",
+            "申万二级": info.get("sw2") or "",
             "年报期数": len(f),
         }
         if f:
@@ -67,15 +73,23 @@ def _build_rows(cons: list[dict], fin: dict, val: dict, imap: dict) -> list[dict
 
     df = pd.DataFrame(rows)
 
-    # 行业内相对量：资产负债率分位、PE/PB 分位（样本=中证500内部同行业，标注局限）
+    # 行业内相对量：资产负债率分位、PE/PB 分位
+    # 样本 = 中证500 内部同行业。优先按申万二级分组（可比性更好），但中证500
+    # 只有 500 只，细分行业常凑不满 5 家，故不足时回退到申万一级。
     def pctl_by_group(col, out):
         df[out] = None
-        for _, idx in df.groupby("申万一级").groups.items():
-            s = df.loc[idx, col]
-            valid = s.dropna()
-            if len(valid) < 5:
-                continue
-            df.loc[valid.index, out] = valid.rank(pct=True).round(4)
+
+        def assign(group_col, mask=None):
+            sub = df if mask is None else df[mask]
+            for _, idx in sub.groupby(group_col).groups.items():
+                valid = df.loc[idx, col].dropna()
+                if len(valid) < 5:
+                    continue
+                df.loc[valid.index, out] = valid.rank(pct=True).round(4)
+
+        assign(PEER_LEVEL)
+        assign(PEER_LEVEL_FALLBACK, df[out].isna())
+
     pctl_by_group("资产负债率", "负债行业分位")
     pctl_by_group("PE分位5年", "PE同行分位")
     pctl_by_group("PB分位5年", "PB同行分位")
