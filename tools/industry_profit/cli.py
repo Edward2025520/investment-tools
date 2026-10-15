@@ -108,21 +108,45 @@ def process(code: str, years: int, level: int, base_dir: Path, mapping: dict,
                   f"{_fmt(metrics[c]['net_margin']):>8}{_fmt(metrics[c]['gross_margin']):>8}"
                   f"{_fmt(metrics[c]['roe']):>8}{_fmt(metrics[c]['roa']):>8}")
 
-    print(f"\n  {_pad('指标', 8)}{_pad('公司值', 12)}{_pad('简单平均', 12)}"
-          f"{_pad('市值加权', 12)}{_pad('行业排位', 12)}")
-    print(f"  {'-'*56}")
+    print(f"\n  {_pad('指标', 8)}{_pad('公司值', 12)}{_pad('中位数', 12)}"
+          f"{_pad('截尾均值', 12)}{_pad('简单平均', 12)}{_pad('市值加权', 12)}"
+          f"{_pad('排位', 14)}{_pad('百分位', 10)}")
+    print(f"  {'-'*82}")
     for m in config.METRICS:
         s = stats[m["key"]]
         rank = "-" if s["rank"] is None else f"第{s['rank']}/{s['n']}名"
+        pct = "-" if s["pct"] is None else f"{s['pct']:.0f}%"
         print(f"  {_pad(m['label'], 8)}{_pad(_fmt(s['target']), 12)}"
-              f"{_pad(_fmt(s['simple']), 12)}{_pad(_fmt(s['weighted']), 12)}{_pad(rank, 12)}")
+              f"{_pad(_fmt(s['median']), 12)}{_pad(_fmt(s['trimmed']), 12)}"
+              f"{_pad(_fmt(s['simple']), 12)}{_pad(_fmt(s['weighted']), 12)}"
+              f"{_pad(rank, 14)}{_pad(pct, 10)}")
+    print(f"\n  注：中位数＝典型公司水平，对亏损与极值稳健，建议主看；"
+          f"简单平均在行业亏损面大时会被拖成负数")
+
+    dp = analysis.dupont_compare(metrics, code)
+    if dp and dp["company"]:
+        print(f"\n  杜邦分解：ROE = 净利率 × 总资产周转率 × 权益乘数")
+        print(f"  {'-'*64}")
+        print(f"  {_pad('', 10)}{_pad('净利率', 12)}{_pad('周转率', 12)}"
+              f"{_pad('权益乘数', 12)}{_pad('ROE', 12)}")
+        dp_rows = [("公司", dp["company"])]
+        if dp["industry"]:
+            dp_rows.append(("同行中位", dp["industry"]))
+        for label, d in dp_rows:
+            roe_check = d["net_margin"] * d["asset_turnover"] * d["equity_multiplier"]
+            turn = f"{d['asset_turnover']:.4f}"  # 4 位：银行等低周转行业，位数少了验算会失准
+            print(f"  {_pad(label, 10)}{_pad(_fmt(d['net_margin']), 12)}"
+                  f"{_pad(turn, 12)}"
+                  f"{_pad(_fmt(d['equity_multiplier']), 12)}{_pad(_fmt(roe_check), 12)}")
+        print(f"  周转率 = ROA ÷ 净利率，权益乘数 = ROE ÷ ROA，三者相乘恒等于 ROE")
 
     # 输出到 charts/industry_compare/ 子目录，与 financial_crawler 隔离
     out_dir = fc_utils.resolve_output_path(code, base_dir) / "charts" / "industry_compare"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     csv_path = out_dir / "industry_compare.csv"
-    header = ["指标", "公司值", "简单平均", "市值加权", "行业排位"]
+    header = ["指标", "公司值", "中位数", "截尾均值", "简单平均", "市值加权",
+              "行业排位", "百分位"]
     if degrade_note:
         header.append("口径备注")
     rows = [header]
@@ -131,9 +155,12 @@ def process(code: str, years: int, level: int, base_dir: Path, mapping: dict,
         row = [
             m["label"],
             "" if s["target"] is None else f"{s['target']:.2f}",
+            "" if s["median"] is None else f"{s['median']:.2f}",
+            "" if s["trimmed"] is None else f"{s['trimmed']:.2f}",
             "" if s["simple"] is None else f"{s['simple']:.2f}",
             "" if s["weighted"] is None else f"{s['weighted']:.2f}",
             "" if s["rank"] is None else f"第{s['rank']}/{s['n']}名",
+            "" if s["pct"] is None else f"{s['pct']:.1f}%",
         ]
         if degrade_note:
             row.append(degrade_note if i == 0 else "")
