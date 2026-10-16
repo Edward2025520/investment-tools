@@ -1,15 +1,25 @@
+# 验证环境（2026-10 实测）：Python 3.9.25 / akshare 1.18.64 / pandas 2.3.1
+#   numpy 2.0.2 / matplotlib 3.9.4 / requests 2.32.5 / httpx 0.28.1
+#   python-docx 1.2.0 / beautifulsoup4 4.14.3 / lxml 6.0.0
+#
+# akshare 严格锁定：项目深度依赖它的函数签名和返回字段名（stock_financial_*_ths、
+# index_component_sw、stock_zh_valuation_baidu 等），换版本极易字段失配。升级前
+# 请先逐个验证这些调用。其余依赖只保留下限，未设上限。
+
 # stock_reports
 httpx>=0.28
 tqdm>=4.67
 
-# financial_crawler / f_screener
-akshare>=1.14
-matplotlib>=3.8
+# financial_crawler / f_screener / industry_profit / screen_csi500 / valuation
+akshare==1.18.64
 pandas>=2.0
+numpy>=1.24
+matplotlib>=3.8
+requests>=2.32
 
-# stock_reports - generate_docs.py
+# stock_reports - generate_docs.py / screen_csi500 - report_docx.py
 python-docx>=1.1
 
-# hkex_client
+# hkex_client / industry_profit - HTML 解析
 beautifulsoup4>=4.12
 lxml>=5.0
