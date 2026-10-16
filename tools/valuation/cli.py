@@ -13,8 +13,11 @@ _project_root = Path(__file__).resolve().parents[2]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+from tools.common import net
 from tools.financial_crawler import utils as fc_utils
 from tools.valuation import analysis, chart, config, data
+
+net.install_default_timeout()
 
 _RE_A = re.compile(r"^\d{6}$")
 

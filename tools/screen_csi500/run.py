@@ -13,7 +13,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from tools.common import net
 from tools.screen_csi500 import config, report, report_docx, screen
+
+net.install_default_timeout()
 
 
 def _out_dir() -> Path:
