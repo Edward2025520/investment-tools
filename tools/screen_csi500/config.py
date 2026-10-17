@@ -1,4 +1,4 @@
-"""中证500 筛选：路径、缓存与阈值配置。
+"""中证指数筛选：路径、缓存与阈值配置。
 
 阈值全部集中在此，便于调参重跑。透明可改，不在代码里藏隐含假设。
 """
@@ -8,7 +8,27 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
 
-CONS_CACHE = DATA_DIR / "csi500_cons.json"               # 成分名单
+# 支持的指数：简称 → (显示名, 中证指数官网代码)
+INDICES = {
+    "500": ("中证500", "000905"),
+    "1000": ("中证1000", "000852"),
+}
+DEFAULT_INDEX = "500"
+
+
+def index_meta(key: str) -> tuple:
+    """简称 → (显示名, 指数代码)；不支持的简称直接报错。"""
+    if key not in INDICES:
+        raise ValueError(f"不支持的指数 {key!r}，可选：{', '.join(sorted(INDICES))}")
+    return INDICES[key]
+
+
+def cons_cache_path(index_key: str) -> Path:
+    """成分名单缓存（按指数分开，避免互相覆盖）。"""
+    return DATA_DIR / f"csi{index_key}_cons.json"
+
+
+# 下面两个缓存按股票代码存，与具体指数无关，各指数共用
 VAL_CACHE_DIR = DATA_DIR / "csi500_valuation"            # 每股 PE/PB 估值历史
 FIN_CACHE_DIR = DATA_DIR / "csi500_financial"            # 每股 THS 摘要指标
 INDUSTRY_MAP = DATA_DIR / "industry_map.json"            # 申万 1/2/3 级完整映射

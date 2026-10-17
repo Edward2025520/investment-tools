@@ -108,18 +108,20 @@ def _retry(fn, tries: int = 3, backoff=(1, 3, 6)):
 
 # ── 成分名单 ──
 
-def load_constituents(refresh: bool = False) -> list[dict]:
-    """中证500当前成分：[{code, name}]。走中证指数官网，按日缓存。"""
-    rec = None if refresh else _cache_read(config.CONS_CACHE, config.CONS_MAX_AGE_DAYS)
+def load_constituents(refresh: bool = False, index_key: str = config.DEFAULT_INDEX) -> list[dict]:
+    """指定指数的当前成分：[{code, name}]。走中证指数官网，按日缓存。"""
+    name, code = config.index_meta(index_key)
+    cache = config.cons_cache_path(index_key)
+    rec = None if refresh else _cache_read(cache, config.CONS_MAX_AGE_DAYS)
     if rec is not None:
         return rec["items"]
-    df = _retry(lambda: ak.index_stock_cons_csindex(symbol="000905"))
+    df = _retry(lambda: ak.index_stock_cons_csindex(symbol=code))
     if df is None or df.empty:
-        raise RuntimeError("中证500成分获取失败（中证指数官网不可达）")
+        raise RuntimeError(f"{name}成分获取失败（中证指数官网不可达）")
     items = [{"code": str(c).zfill(6), "name": str(n)}
              for c, n in zip(df["成分券代码"], df["成分券名称"])]
     items = [it for it in items if it["code"].isdigit()]
-    _cache_write(config.CONS_CACHE, {"items": items})
+    _cache_write(cache, {"items": items})
     return items
 
 

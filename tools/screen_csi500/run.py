@@ -1,9 +1,10 @@
-"""入口：跑中证500筛选，输出明细/候选 CSV、四张图、Markdown 与 Word 报告。
+"""入口：跑中证指数成分股筛选，输出明细/候选 CSV、四张图、Markdown 与 Word 报告。
 
 用法：
-    python tools/screen_csi500/run.py               # 全量 500 只
-    python tools/screen_csi500/run.py --limit 30    # 小样本试跑
-    python tools/screen_csi500/run.py --refresh     # 强制重抓
+    python tools/screen_csi500/run.py                  # 中证500 全量
+    python tools/screen_csi500/run.py --index 1000     # 中证1000 全量
+    python tools/screen_csi500/run.py --limit 30       # 小样本试跑
+    python tools/screen_csi500/run.py --refresh        # 强制重抓
 """
 
 import argparse
@@ -19,28 +20,31 @@ from tools.screen_csi500 import config, report, report_docx, screen
 net.install_default_timeout()
 
 
-def _out_dir() -> Path:
-    d = config.DATA_DIR / "reports" / "_screens" / f"csi500_{date.today():%Y%m%d}"
+def _out_dir(index_key: str) -> Path:
+    d = config.DATA_DIR / "reports" / "_screens" / f"csi{index_key}_{date.today():%Y%m%d}"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="中证500 分层筛选（描述性，不构成投资建议）")
+    ap = argparse.ArgumentParser(description="中证指数成分股分层筛选（描述性，不构成投资建议）")
+    ap.add_argument("--index", default=config.DEFAULT_INDEX, choices=sorted(config.INDICES),
+                    help="指数简称：500 或 1000（默认 500）")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 只（试跑用）")
     ap.add_argument("--refresh", action="store_true", help="强制重抓缓存")
     args = ap.parse_args()
 
-    print("[中证500筛选] 拉取成分与指标…")
-    res = screen.run_screen(refresh=args.refresh, limit=args.limit)
+    name, _ = config.index_meta(args.index)
+    print(f"[{name}筛选] 拉取成分与指标…")
+    res = screen.run_screen(refresh=args.refresh, limit=args.limit, index_key=args.index)
     df = res["frame"]
 
-    out = _out_dir()
-    full = out / "csi500_metrics.csv"
+    out = _out_dir(args.index)
+    full = out / f"csi{args.index}_metrics.csv"
     df.drop(columns=[c for c in df.columns if c.startswith("_")]).to_csv(
         full, index=False, encoding="utf-8-sig")
     cand = df[df["候选"] == "是"].drop(columns=[c for c in df.columns if c.startswith("_")])
-    cand_path = out / "csi500_candidates.csv"
+    cand_path = out / f"csi{args.index}_candidates.csv"
     cand.to_csv(cand_path, index=False, encoding="utf-8-sig")
 
     n = res["n"]
@@ -61,8 +65,8 @@ def main() -> None:
     print(f"\n  已输出:\n    {full}\n    {cand_path}")
 
     print("\n[生成报告] 绘图与报告…")
-    md = report.build(out)["markdown"]
-    docx_path = out / "中证500筛选报告.docx"
+    md = report.build(out, index_name=name)["markdown"]
+    docx_path = out / f"{name}筛选报告.docx"
     imgs = sorted(out.glob("*.png"))
     report_docx.convert(md, docx_path, imgs)
     print(f"\n  报告: {md}\n  Word: {docx_path}\n  图表: {len(imgs)} 张 PNG -> {out}")

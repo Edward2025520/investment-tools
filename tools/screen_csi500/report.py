@@ -32,7 +32,7 @@ def _read(path: Path) -> pd.DataFrame:
     return df
 
 
-def plot_valuation_distribution(df: pd.DataFrame, out: Path) -> None:
+def plot_valuation_distribution(df: pd.DataFrame, out: Path, index_name: str = "中证500") -> None:
     """全样本“自身估值分位”直方，阈值线与候选叠标。"""
     vals = df["自身分位"].dropna()
     cand = df.loc[df["候选"] == "是", "自身分位"].dropna()
@@ -45,7 +45,7 @@ def plot_valuation_distribution(df: pd.DataFrame, out: Path) -> None:
             f" 阈值 {config.SELF_PCTL_MAX:.0%}", color="#C0392B", va="top", fontsize=10)
     ax.set_xlabel("自身历史估值分位（PE 与 PB 取较低者，越低越便宜）")
     ax.set_ylabel("只数")
-    ax.set_title(f"中证500 估值分位分布（n={len(vals)}，红=候选 {len(cand)}）",
+    ax.set_title(f"{index_name} 估值分位分布（n={len(vals)}，红=候选 {len(cand)}）",
                  fontsize=12.5, fontweight="bold")
     ax.grid(axis="y", alpha=0.3)
     ax.set_axisbelow(True)
@@ -55,7 +55,7 @@ def plot_valuation_distribution(df: pd.DataFrame, out: Path) -> None:
     plt.close(fig)
 
 
-def plot_roe_vs_valuation(df: pd.DataFrame, out: Path) -> None:
+def plot_roe_vs_valuation(df: pd.DataFrame, out: Path, index_name: str = "中证500") -> None:
     """ROE(3年均) vs 自身估值分位散点；通过前两层的点单独着色。
 
     y 轴裁到 [ROE_Y_LO, ROE_Y_HI]，被裁掉的只数写进标题，避免读者误判样本量。
@@ -73,7 +73,7 @@ def plot_roe_vs_valuation(df: pd.DataFrame, out: Path) -> None:
     ax.set_ylabel("ROE 近 3 年均值（%）")
     n_off = int((d["ROE3年均"] < ROE_Y_LO).sum())
     ax.set_ylim(ROE_Y_LO, ROE_Y_HI)
-    title = "中证500：盈利水平 vs 估值分位（左下=又便宜又赚钱）"
+    title = f"{index_name}：盈利水平 vs 估值分位（左下=又便宜又赚钱）"
     if n_off:
         title += f"\n（y 轴裁至 {ROE_Y_LO}%~{ROE_Y_HI}%，另有 {n_off} 只 ROE<{ROE_Y_LO}% 未显示）"
     ax.set_title(title, fontsize=12.5, fontweight="bold")
@@ -153,7 +153,7 @@ def plot_trap(df: pd.DataFrame, out: Path) -> None:
     plt.close(fig)
 
 
-def write_markdown(df: pd.DataFrame, out: Path, meta: dict) -> Path:
+def write_markdown(df: pd.DataFrame, out: Path, meta: dict, index_name: str = "中证500") -> Path:
     """方法章 + 结果章 + 局限声明，Markdown 供导出 docx。"""
     n = len(df)
     p1 = int(df["_p1"].sum())
@@ -220,9 +220,9 @@ def write_markdown(df: pd.DataFrame, out: Path, meta: dict) -> Path:
             body.append("| " + " | ".join(cells) + " |")
         return "\n".join([head, sep, *body])
 
-    md = f"""# 中证500 低估值·财务健康·成长 筛选报告
+    md = f"""# {index_name} 低估值·财务健康·成长 筛选报告
 
-> 生成日期：{meta['date']}　样本：{n} 只（中证500 当前成分）
+> 生成日期：{meta['date']}　样本：{n} 只（{index_name} 当前成分）
 > **本报告为描述性筛选结果，不构成任何投资建议或买卖推荐。** 所有阈值均为可调假设，
 > 数值只反映“在该套条件下是否入选”，不代表公司好坏或未来收益。
 
@@ -309,9 +309,9 @@ def write_markdown(df: pd.DataFrame, out: Path, meta: dict) -> Path:
 
 ## 五、已知局限
 
-1. **同行对比粒度受限**：优先按申万二级分组，但中证500 只有 500 只，二级只有约 65%
-   的股票能凑够 5 家同行，其余回退申万一级，跨细分行业可比性因此变弱。
-2. **同行样本仅中证500 内部**：基准是同行业内的中证500 成分股，不含行业内大市值龙头。
+1. **同行对比粒度受限**：优先按申万二级分组，凑不够 5 家同行时回退申万一级，
+   跨细分行业可比性因此变弱。
+2. **同行样本仅{index_name} 内部**：基准是同行业内的{index_name} 成分股，不含行业内大市值龙头。
    美容护理、社会服务、商贸零售、纺织服饰成分不足 5 只，无法比较，其中个股按“无法评估”淘汰；
    营收/扣非 CAGR 在区间首末值为负时也算不出，同样按缺失淘汰。三类“要求型”条件
    （ROE、现金含量、成长性、估值分位）一律“缺失即淘汰”，不做缺失放行。
@@ -326,17 +326,20 @@ def write_markdown(df: pd.DataFrame, out: Path, meta: dict) -> Path:
 本报告不推荐任何具体证券，不预测价格，不含目标价或评级。筛选条件与结果仅用于学习与
 辅助你自己研究；任何买卖决策及风险由你自己承担。
 """
-    p = out / "中证500筛选报告.md"
+    p = out / f"{index_name}筛选报告.md"
     p.write_text(md, encoding="utf-8")
     return p
 
 
-def build(out_dir: Path) -> dict:
-    df = _read(out_dir / "csi500_metrics.csv")
+def build(out_dir: Path, index_name: str = "中证500") -> dict:
+    metrics = sorted(out_dir.glob("*_metrics.csv"))
+    if not metrics:
+        raise FileNotFoundError(f"{out_dir} 下找不到 *_metrics.csv")
+    df = _read(metrics[0])
     meta = {"date": pd.Timestamp.today().strftime("%Y-%m-%d")}
-    plot_valuation_distribution(df, out_dir)
-    plot_roe_vs_valuation(df, out_dir)
+    plot_valuation_distribution(df, out_dir, index_name=index_name)
+    plot_roe_vs_valuation(df, out_dir, index_name=index_name)
     plot_industry_mix(df, out_dir)
     plot_trap(df, out_dir)
-    md = write_markdown(df, out_dir, meta)
+    md = write_markdown(df, out_dir, meta, index_name=index_name)
     return {"markdown": md, "dir": out_dir}

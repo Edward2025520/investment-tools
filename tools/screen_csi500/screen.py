@@ -182,8 +182,9 @@ def _evaluate(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def run_screen(refresh: bool = False, limit: int = 0, verbose: bool = True) -> dict:
-    cons = data.load_constituents(refresh=refresh)
+def run_screen(refresh: bool = False, limit: int = 0, verbose: bool = True,
+               index_key: str = config.DEFAULT_INDEX) -> dict:
+    cons = data.load_constituents(refresh=refresh, index_key=index_key)
     if limit:
         cons = cons[:limit]
     codes = [c["code"] for c in cons]
