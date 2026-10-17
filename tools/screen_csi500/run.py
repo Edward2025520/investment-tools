@@ -58,6 +58,10 @@ def main() -> None:
             "  请先重建映射缓存：\n"
             "    conda run -n ai python tools/industry_profit/cli.py 600519 --refresh-cache"
         )
+    n_fin = int((df["年报期数"].fillna(0) > 0).sum())
+    if n_fin < n:
+        print(f"\n  [提示] 财务数据命中 {n_fin}/{n}；未命中的按「财务数据缺失」淘汰。"
+              f"比例偏高时可重跑（本次已自动降并发补抓一轮）。")
     print(f"\n  样本 {n} 只")
     print(f"  过第1层(排除)        : {p1}")
     print(f"  过1+2层(健康+成长)   : {p2}")

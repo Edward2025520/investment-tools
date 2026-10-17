@@ -117,7 +117,10 @@ def _evaluate(df: pd.DataFrame) -> pd.DataFrame:
             rs.append("强周期行业")
         if "ST" in r["名称"] or "退" in r["名称"]:
             rs.append("ST/退市风险")
-        if (r["年报期数"] or 0) < c.MIN_LISTED_YEARS:
+        n_years = r["年报期数"] or 0
+        if n_years == 0:
+            rs.append("财务数据缺失")   # 抓取失败或确实无数据，与「上市不足」区分
+        elif n_years < c.MIN_LISTED_YEARS:
             rs.append(f"上市不足{c.MIN_LISTED_YEARS}年")
         if (r["扣非为正年数"] or 0) < c.PROFIT_POSITIVE_MIN_YEARS:
             rs.append("扣非近年多为负(亏损/微利)")

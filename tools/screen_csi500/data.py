@@ -248,10 +248,10 @@ def load_financial(code: str, refresh: bool = False) -> Optional[dict]:
     return rows
 
 
-def fetch_financials(codes: list[str], refresh: bool = False, concurrency: int = 8) -> dict:
-    out = {}
+def _fetch_round(out: dict, codes: list, loader, refresh: bool, concurrency: int) -> None:
+    """并发跑一轮 loader，命中的写进 out。"""
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futs = {pool.submit(load_financial, c, refresh): c for c in codes}
+        futs = {pool.submit(loader, c, refresh): c for c in codes}
         for f in as_completed(futs):
             c = futs[f]
             try:
@@ -260,22 +260,33 @@ def fetch_financials(codes: list[str], refresh: bool = False, concurrency: int =
                 r = None
             if r:
                 out[c] = r
+
+
+def _fetch_with_retry(codes: list[str], loader, refresh: bool,
+                      concurrency: int, label: str) -> dict:
+    """并发抓取；首轮未命中的降并发补抓一轮。
+
+    未命中绝大多数是并发限流，不是数据不存在——实测中证1000 首轮并发 8 丢了 145 只
+    （全集中在同一代码段），串行补抓 30/30 全部成功。所以值得降并发补一轮。
+    """
+    out = {}
+    _fetch_round(out, codes, loader, refresh, concurrency)
+    failed = [c for c in codes if c not in out]
+    if failed:
+        print(f"    {label}首轮 {len(failed)} 只未命中，降并发补抓…")
+        _fetch_round(out, failed, loader, refresh, 2)
+        still = [c for c in failed if c not in out]
+        if still:
+            print(f"    [警告] {label}仍有 {len(still)} 只未命中（可能确实无数据）")
     return out
+
+
+def fetch_financials(codes: list[str], refresh: bool = False, concurrency: int = 8) -> dict:
+    return _fetch_with_retry(codes, load_financial, refresh, concurrency, "财务")
 
 
 def fetch_valuations(codes: list[str], refresh: bool = False, concurrency: int = 4) -> dict:
-    out = {}
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futs = {pool.submit(load_valuation, c, refresh): c for c in codes}
-        for f in as_completed(futs):
-            c = futs[f]
-            try:
-                r = f.result()
-            except Exception:
-                r = None
-            if r is not None:
-                out[c] = r
-    return out
+    return _fetch_with_retry(codes, load_valuation, refresh, concurrency, "估值")
 
 
 _MIN_INDUSTRY_MAP = 1000  # 少于这个数视为不完整，退回降级源
